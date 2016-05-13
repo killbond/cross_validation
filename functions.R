@@ -89,6 +89,12 @@ crossValidate <- function(nfold, data, method = 'number') {
   # Определим общее число частей, в зависимости от метода
   nparts <- getNparts(nfold, method)
   
+  # Определим до начала испытаний является ли текущий вызов leave-one-out кросс-валидацией
+  loocv <- nrow(data) == nfold
+  
+  # Заранее подготовим вектор для накапливания откликов модели
+  storage <- c()
+  
   # Счетчик порядкового номера контрольной выборки
   trainPart <- 1
   result <- list()
@@ -104,54 +110,77 @@ crossValidate <- function(nfold, data, method = 'number') {
     # Предсказываем вероятность в масштабе предсказуемого значения (class), т.е. от 0 до 1
     prob <- predict(object = fit, newdata = train, type = "response")
     
-    # Для дальнейших вычислений необходимо, чтобы данные хранились в виде объекта, используемого библиотекой ROCR
-    # следующей командой создаем этот объект (предсказанные вероятности + требуемые результирующие значения)
-    pred_fit <- prediction(prob, factor(train$class, levels = c(0, 1)))
-    
-    # Находим специфичность решений
-    # Это вектор зависимостей между порогом классификации и числом правильных ответов для класса "1", т.к. у нас бинарная модель
-    specificity  <- performance(pred_fit, x.measure = "cutoff", measure = "spec")
-    
-    # Находим чувствительность решений
-    # Это вектор зависимостей между порогом классификации и числом правильных ответов для класса "0", т.к. у нас бинарная модель
-    sensitivity  <- performance(pred_fit, x.measure = "cutoff", measure = "sens")
-    
-    # Отобразим обе зависимости на графике
-    #plot(specificity, col = "red", lwd = 2)
-    #plot(add = T, sensitivity , col = "green", lwd = 2)
-    
-    # Для определения порога классификации посчитаем абсолютную разницу между значениями кривых специфичности и чувствительности
-    diff <- abs(unlist(specificity@y.values) - unlist(sensitivity@y.values))
-    
-    # Получаем порог классификации по наименьшей из величин вектора разниц
-    threshold <- unlist(sensitivity@x.values)[match(min(diff), diff)]
-    
-    # Отобразим порог на графике
-    #abline(v = threshold, lwd = 2)
-    
-    # Используя полученную вероятность и порог классификации, составим вектор ответов для полученной модели
-    pred_resp  <- factor(ifelse(prob > threshold, 1, 0))
-    
-    # и вектор учета правильных ответов относительно значений в контрольной выборке
-    correct  <- ifelse(pred_resp == train$class, 1, 0)
-    
-    # Если в контрольной выборке единственное наблюдение, то данных для вычисления AUC недостаточно
-    if(nrow(train) != 1) {
-      auc <- performance(pred_fit, x.measure = "cutoff", measure = "auc")@y.values[[1]]
+    # В случае leave-on-out накапливаем отклик
+    if(loocv) {
+      storage[trainPart] <- prob
     } else {
-      auc <- NA
+      # В вектор результата запишем среднее число правильных ответов модели и AUC
+      result[[trainPart]] <- modelSummary(prob, train$class)
     }
-    
-    # В вектор результата запишем среднее число правильных ответов модели и AUC
-    result[[trainPart]] <- list('mean' = mean(correct), 'AUC' = auc)
     
     # Увеличиваем счетчик номера контрольной выборки
     trainPart <- trainPart + 1
   }
+  
+  # В случае leave-one-out кросс-валидации сравнительные характеристики рассчитываем по заранее 
+  # по заранее накопленному вектору откликов модели
+  if(loocv) {
+    return(modelSummary(storage, data$class))
+  } else {
+    return(list(
+      # Среднее количество правильных ответов для всех моделей
+      'mean' = mean(unlist(sapply(result, "[", 'mean'))),
+      # Средняя площадь ROC кривой для всех моделей
+      'AUC' = mean(unlist(sapply(result, "[", 'AUC')))
+    ))
+  }
+}
+
+# Задачей данной функции является подсчет сравнительных характеристик по рассчитанной модели
+#
+# (vector) prob - вектор вероятностей принадлежности наблюдений тому или иному классу
+#
+# (vector) actual - вектор действительных классов наблюдений
+modelSummary <- function(prob, actual) {
+  
+  # Для дальнейших вычислений необходимо, чтобы данные хранились в виде объекта, используемого библиотекой ROCR
+  # следующей командой создаем этот объект (предсказанные вероятности + требуемые результирующие значения)
+  pred_fit <- prediction(prob, factor(actual, levels = c(0, 1)))
+  
+  # Находим специфичность решений
+  # Это вектор зависимостей между порогом классификации и числом правильных ответов для класса "1", т.к. у нас бинарная модель
+  specificity  <- performance(pred_fit, x.measure = "cutoff", measure = "spec")
+  
+  # Находим чувствительность решений
+  # Это вектор зависимостей между порогом классификации и числом правильных ответов для класса "0", т.к. у нас бинарная модель
+  sensitivity  <- performance(pred_fit, x.measure = "cutoff", measure = "sens")
+  
+  # Отобразим обе зависимости на графике
+  plot(specificity, col = "red", lwd = 2)
+  plot(add = T, sensitivity , col = "green", lwd = 2)
+  
+  # Для определения порога классификации посчитаем абсолютную разницу между значениями кривых специфичности и чувствительности
+  diff <- abs(unlist(specificity@y.values) - unlist(sensitivity@y.values))
+  
+  # Получаем порог классификации по наименьшей из величин вектора разниц
+  threshold <- unlist(sensitivity@x.values)[match(min(diff), diff)]
+  
+  # Отобразим порог на графике
+  abline(v = threshold, lwd = 2)
+  
+  # Используя полученную вероятность и порог классификации, составим вектор ответов для полученной модели
+  pred_resp  <- factor(ifelse(prob > threshold, 1, 0))
+  
+  # и вектор учета правильных ответов относительно значений в контрольной выборке
+  correct  <- ifelse(pred_resp == actual, 1, 0)
+  
+  # Вычислим площадь под ROC кривой
+  auc <- performance(pred_fit, x.measure = "cutoff", measure = "auc")@y.values[[1]]
+  
   return(list(
-    # Среднее количество правильных ответов для всех моделей
-    'mean' = mean(unlist(sapply(result, "[", 'mean'))),
-    # Средняя площадь ROC кривой для всех моделей
-    'AUC' = mean(unlist(sapply(result, "[", 'AUC')))
-  ))
+    # Среднее число правильных ответов
+    'mean' = mean(correct),
+    # Площадь под ROC-кривой
+    'AUC' = auc)
+    )
 }
